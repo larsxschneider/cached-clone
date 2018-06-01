@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
-#/ Usage: git cclone <repo-url> <cache-dir> <working-copy-dir> <ref>
+#/
+#/ Usage: git cclone <repo-url> <cache-dir> <working-copy-dir> <ref> [<merge-ref>]
 #/
 #/ Clone a repository and leverage a local cache. Git submodules and
 #/ Git LFS files are cached as well.
+#/
+#/ <ref> is checked out in the <working-copy-dir>. If a <merge-ref> is defined,
+#/ then it is merged into the <ref> in the <working-copy-dir> after checkout.
 #/
 #/ Attention the <working-copy-dir> is always purged!
 #/
 #/ Known issues:
 #/  - only one level of Submodules are processed
+#/  - "include.path" global/system Git configs do not work in the working copy
 #/
 #/ Examples:
 #/
 #/   Clone and checkout the master branch:
-#/   $ git cclone http://myrepo.git /cache /repo master
+#/   $ git cclone http://myrepo.git cache repo master
+#/
+#/   Clone and checkout a feature branch and merge in the master branch:
+#/   $ git cclone http://myrepo.git cache repo feat master
 #/
 #/   Clone and checkout a PR head:
 #/   $ git cclone <repo-url> <cache-dir> <working-copy-dir> pull/<pr-id>/head
@@ -21,12 +29,12 @@
 #/   $ git cclone <repo-url> <cache-dir> <working-copy-dir> pull/<pr-id>/merge
 #/
 
-CCLONE_VERSION='v0.0.2'
+CCLONE_VERSION='v0.0.4'
 
 # Abort the script if a single command fails.
 set -e
 
-if [ "$#" -ne 4 ]; then
+if [ "$#" -lt 4 ]; then
     grep '^#/' < "$0" | cut -c 4-
     exit 2
 fi
@@ -42,27 +50,29 @@ else
     QUIET_FLAG='--quiet'
 fi
 
-# Calculate the absolute path (realpath might not be available on macOS)
-realpath() {
-    [[ $1 = /* ]] && echo "$1" || echo "$PWD/${1#./}"
+function realpath_wrapper() {
+    if command -v realpath >/dev/null; then
+        realpath "$1"
+    else
+        # realpath is not available, use this workaround (e.g on macOS)
+        [[ $1 = /* ]] && echo "$1" || echo "$PWD/${1#./}"
+    fi
 }
 
 # Helper functions to print output
 function log {
-    printf "\n>>> $1\n"
+    echo ''
+    echo ">>> $1"
 }
 
 function err {
-    printf "ERROR: $1\n"
+    echo "ERROR: $1"
 }
 
 # Helper function that retries a command if it failed.
 # This is useful for Git commands that perform network requests as
 # network requests can always fail.
 function git_retry {
-    local remote=$1
-    local ref=$2
-    local git_dir=$3
     local retries=7   # longest continuous wait should be 64s (2**6)
     local count=1     # first try after 4s, if needed
     local ret=1       # make command overwrite this
@@ -85,16 +95,21 @@ function git_retry {
 }
 
 GIT_REMOTE=$1
-GIT_CACHE=$(realpath $2)
-WORKING_COPY=$(realpath $3)
-REF=$4
+GIT_CACHE=$(realpath_wrapper "$2")
+WORKING_COPY=$(realpath_wrapper "$3")
+MAIN_REF=$4
+MERGE_REF=$5
 
 SHARED_CONFIG="$GIT_CACHE/shared-config"
-MAIN_SHA1=""
+MAIN_REF_SHA1=""
 SECONDS=0
 
-if [[ $REF != pull/* ]]; then
-    REF="heads/$REF"
+if [[ -n "$MAIN_REF" && $MAIN_REF != pull/* ]]; then
+    MAIN_REF="heads/$MAIN_REF"
+fi
+
+if [[ -n "$MERGE_REF" && $MERGE_REF != pull/* ]]; then
+    MERGE_REF="heads/$MERGE_REF"
 fi
 
 log "Cached Clone $CCLONE_VERSION"
@@ -132,12 +147,8 @@ pushd "$GIT_CACHE" >/dev/null
                 longpaths = true
 
             [gc]
-                # Disable all garbage collection. Objects that cannot be referenced
-                # in the share objects directory might belong to another repo that
-                # is using the cache.
+                # Disable automatic garbage collection as this could take time.
                 auto = 0
-                pruneExpire = never
-                reflogExpire = never
 
             [lfs]
                 batch = true
@@ -163,45 +174,62 @@ pushd "$GIT_CACHE" >/dev/null
                 process = git-lfs filter-process
                 required = true
 EOM
-        git config --local include.path $SHARED_CONFIG
+        git config --local include.path "$SHARED_CONFIG"
     fi
 
     log "Updating Cache"
-    main_remote_name=$(git hash-object <(echo "$GIT_REMOTE"))
-    git_retry fetch --force --no-tags $GIT_REMOTE \
-        "refs/$REF:refs/remotes/$main_remote_name/$REF"
-    MAIN_SHA1=$(git rev-parse refs/remotes/$main_remote_name/$REF)
-    git lfs fetch $GIT_REMOTE $MAIN_SHA1
+    main_remote_name=$(echo "$GIT_REMOTE" | git hash-object --stdin)
+    main_ref_spec="refs/$MAIN_REF:refs/remotes/$main_remote_name/$MAIN_REF"
+    if [[ -n "$MERGE_REF" ]]; then
+        merge_ref_spec="refs/$MERGE_REF:refs/remotes/$main_remote_name/$MERGE_REF"
+    fi
+    git_retry fetch --force --no-tags "$GIT_REMOTE" "$main_ref_spec" "$merge_ref_spec"
+    MAIN_REF_SHA1=$(git rev-parse "refs/remotes/$main_remote_name/$MAIN_REF")
+    if [[ -n "$MERGE_REF" ]]; then
+        MERGE_REF_SHA1=$(git rev-parse "refs/remotes/$main_remote_name/$MERGE_REF")
+    fi
+    # $MERGE_REF_SHA1 has intentionally no double quotes to allow it to be empty
+    git lfs fetch "$GIT_REMOTE" "$MAIN_REF_SHA1" $MERGE_REF_SHA1
 
 popd >/dev/null
 
+if ! rm -rf "$WORKING_COPY"; then
+    err "Cleaning the working directory failed. Maybe another application is still using it?"
+    exit 1
+fi
+
 log "Preparing Checkout"
-rm -rf "$WORKING_COPY"
 mkdir -p "$WORKING_COPY"
 pushd "$WORKING_COPY" >/dev/null
 
     git clone $QUIET_FLAG --reference "$GIT_CACHE" --no-checkout "$GIT_CACHE" .
-    git -c include.path=$SHARED_CONFIG \
-        checkout $QUIET_FLAG --force --detach $MAIN_SHA1
+    git config --local include.path "$SHARED_CONFIG"
+    git checkout $QUIET_FLAG --force --detach "$MAIN_REF_SHA1"
 
     git submodule sync --recursive
     git submodule--helper list |
-        while read mode sm_sha1 stage sm_path
+        while read -r mode sm_sha1 stage sm_path
         do
+            # We clone the working copy with the local cache path to avoid
+            # unnecessary additional network calls. However, since the working
+            # copy does not know its true repository URL, it would not be able
+            # to reconstruct relative submodule URLs (e.g. '../sub.git').
+            # Set the parent repo URL here to fix this.
+            git remote set-url origin "$GIT_REMOTE"
             git submodule $QUIET_FLAG init -- "$sm_path"
 
             sm_name=$(git submodule--helper name "$sm_path")
-            sm_relpath=$(git submodule--helper relative-path $sm_name '')
-            sm_url=$(git config submodule.$sm_name.url)
-            sm_remote_name=$(git hash-object <(echo "$sm_url"))
+            sm_relpath=$(git submodule--helper relative-path "$sm_name" '')
+            sm_url=$(git config "submodule.$sm_name.url")
+            sm_remote_name=$(echo "$sm_url" | git hash-object --stdin)
             sm_gitdir=".git/modules/$sm_name"
             mkdir -p .git/modules
 
             pushd "$GIT_CACHE" >/dev/null
                 log "Updating Cache (Submodule '$sm_path')"
-                git_retry fetch --force --no-tags $sm_url \
+                git_retry fetch --force --no-tags "$sm_url" \
                         "refs/heads/*:refs/remotes/$sm_remote_name/heads/*"
-                git lfs fetch $sm_url $sm_sha1
+                git lfs fetch "$sm_url" "$sm_sha1"
             popd >/dev/null
 
             log "Preparing Checkout (Submodule '$sm_path')"
@@ -211,10 +239,15 @@ pushd "$WORKING_COPY" >/dev/null
               --separate-git-dir="$sm_gitdir" \
               --no-checkout \
               "$GIT_CACHE" "$sm_relpath"
+            git config --local include.path "$SHARED_CONFIG"
             git --git-dir="$sm_gitdir" --work-tree="$sm_relpath" \
-                -c include.path=$SHARED_CONFIG \
-                checkout $QUIET_FLAG --force --detach $sm_sha1
+                checkout $QUIET_FLAG --force --detach "$sm_sha1"
         done
+
+    if [[ -n "$MERGE_REF" ]]; then
+        log "Merging"
+        git merge --no-edit -m "cached clone temporary merge" "$MERGE_REF_SHA1"
+    fi
 
 popd >/dev/null
 

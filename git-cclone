@@ -8,6 +8,12 @@
 #/ <ref> is checked out in the <working-copy-dir>. If a <merge-ref> is defined,
 #/ then it is merged into the <ref> in the <working-copy-dir> after checkout.
 #/
+#/ <ref> and <merge-ref> are generally interpreted as branch heads unless they
+#/ are prefixed with "tags/" or "pulls". Refs prefixed with "tags/" are used to
+#/ checkout a tag (e.g. "tags/v1.0"). Refs prefixed with "pull/" are used to
+#/ checkout a GitHub pull request head (e.g. "pull/3/head") or merge (e.g.
+#/ "pull/3/merge") commit.
+#/
 #/ Attention the <working-copy-dir> is always purged!
 #/
 #/ Known issues:
@@ -21,6 +27,9 @@
 #/
 #/   Clone and checkout a feature branch and merge in the master branch:
 #/   $ git cclone http://myrepo.git cache repo feat master
+#/
+#/   Clone and checkout a tag:
+#/   $ git cclone <repo-url> <cache-dir> <working-copy-dir> tags/<tag-name>
 #/
 #/   Clone and checkout a PR head:
 #/   $ git cclone <repo-url> <cache-dir> <working-copy-dir> pull/<pr-id>/head
@@ -104,11 +113,11 @@ SHARED_CONFIG="$GIT_CACHE/shared-config"
 MAIN_REF_SHA1=""
 SECONDS=0
 
-if [[ -n "$MAIN_REF" && $MAIN_REF != pull/* ]]; then
+if [[ -n "$MAIN_REF" && $MAIN_REF != pull/* && $MAIN_REF != tags/* ]]; then
     MAIN_REF="heads/$MAIN_REF"
 fi
 
-if [[ -n "$MERGE_REF" && $MERGE_REF != pull/* ]]; then
+if [[ -n "$MERGE_REF" && $MERGE_REF != pull/* && $MERGE_REF != tags/* ]]; then
     MERGE_REF="heads/$MERGE_REF"
 fi
 

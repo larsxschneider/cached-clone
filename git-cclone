@@ -223,7 +223,7 @@ pushd "$WORKING_COPY" >/dev/null
             sm_url=$(git config "submodule.$sm_name.url")
             sm_remote_name=$(echo "$sm_url" | git hash-object --stdin)
             sm_gitdir=".git/modules/$sm_name"
-            mkdir -p .git/modules
+            mkdir -p "$(dirname "$sm_gitdir")"
 
             pushd "$GIT_CACHE" >/dev/null
                 log "Updating Cache (Submodule '$sm_path')"

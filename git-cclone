@@ -226,10 +226,14 @@ pushd "$WORKING_COPY" >/dev/null
             mkdir -p "$(dirname "$sm_gitdir")"
 
             pushd "$GIT_CACHE" >/dev/null
-                log "Updating Cache (Submodule '$sm_path')"
-                git_retry fetch --force --no-tags "$sm_url" \
-                        "refs/heads/*:refs/remotes/$sm_remote_name/heads/*"
-                git lfs fetch "$sm_url" "$sm_sha1"
+                # Fetch the submodule only if the submodule commit is not
+                # already in the cache
+                if ! git cat-file -e "$sm_sha1^{commit}" 2>/dev/null; then
+                    log "Updating Cache (Submodule '$sm_path')"
+                    git_retry fetch --force --no-tags "$sm_url" \
+                            "refs/heads/*:refs/remotes/$sm_remote_name/heads/*"
+                    git lfs fetch "$sm_url" "$sm_sha1"
+                fi
             popd >/dev/null
 
             log "Preparing Checkout (Submodule '$sm_path')"

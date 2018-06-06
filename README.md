@@ -15,7 +15,9 @@ git cclone <repo-url> <cache-dir> <working-copy-dir> <ref>
 - `repo-url` is the URL of the repository you want to clone
 - `cache-dir` is the directory used for caching (can grow large!)
 - `working-copy-dir` is the directory for the checkout (is always purged!)
-- `ref` is the branch you want to checkout (can also be a pull request ref such as `pull/<pr-id>/head` or `pull/<pr-id>/merge`)
+- `ref` denotes the branch you want to checkout but can also be ... 
+  - ... a tag ref via `tags/<tag-name>`
+  - ... a pull request ref via `pull/<pr-id>/head` or `pull/<pr-id>/merge`
 
 ## Example Usage
 
